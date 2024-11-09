@@ -26,6 +26,7 @@ package me.shedaniel.rei.impl.common.registry.displays;
 import com.google.common.base.Stopwatch;
 import com.google.common.base.Supplier;
 import com.google.common.base.Suppliers;
+import dev.architectury.event.events.common.LifecycleEvent;
 import dev.architectury.event.events.common.PlayerEvent;
 import dev.architectury.event.events.common.TickEvent;
 import dev.architectury.networking.NetworkManager;
@@ -93,6 +94,9 @@ public class ServerDisplayRegistryImpl extends AbstractDisplayRegistry<REICommon
         });
         PlayerEvent.PLAYER_QUIT.register(player -> {
             playerVersionMap.removeLong(player.getUUID());
+        });
+        LifecycleEvent.SERVER_STARTING.register(instance -> {
+            fillRecipes();
         });
     }
     
@@ -227,7 +231,12 @@ public class ServerDisplayRegistryImpl extends AbstractDisplayRegistry<REICommon
     }
     
     private List<RecipeHolder<?>> getAllSortedRecipes() {
-        return GameInstance.getServer().getRecipeManager().getRecipes().parallelStream().sorted(RECIPE_COMPARATOR).toList();
+        var server = GameInstance.getServer();
+        if (server == null) {
+            return Collections.emptyList();
+        }
+
+        return server.getRecipeManager().getRecipes().parallelStream().sorted(RECIPE_COMPARATOR).toList();
     }
     
     public static class ServerDisplaysHolder extends DisplaysHolderImpl {
