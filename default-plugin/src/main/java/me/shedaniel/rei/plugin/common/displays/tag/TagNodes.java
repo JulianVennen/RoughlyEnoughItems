@@ -27,12 +27,14 @@ import com.mojang.serialization.DataResult;
 import dev.architectury.event.events.client.ClientLifecycleEvent;
 import dev.architectury.networking.NetworkManager;
 import dev.architectury.networking.transformers.SplitPacketTransformer;
+import dev.architectury.platform.Platform;
 import dev.architectury.utils.Env;
 import dev.architectury.utils.EnvExecutor;
 import io.netty.buffer.Unpooled;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import it.unimi.dsi.fastutil.ints.IntList;
 import me.shedaniel.rei.api.common.display.basic.BasicDisplay;
+import me.shedaniel.rei.plugin.common.networking.RequestTagsResponsePacket;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.client.Minecraft;
@@ -40,8 +42,9 @@ import net.minecraft.core.Holder;
 import net.minecraft.core.HolderSet;
 import net.minecraft.core.Registry;
 import net.minecraft.core.registries.BuiltInRegistries;
-import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.RegistryFriendlyByteBuf;
+import net.minecraft.network.codec.ByteBufCodecs;
+import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
@@ -86,55 +89,31 @@ public class TagNodes {
     }
     
     public record TagData(IntList otherElements, List<ResourceLocation> otherTags) {
-        private static TagData fromNetwork(FriendlyByteBuf buf) {
-            int count = buf.readVarInt();
-            IntList otherElements = new IntArrayList(count + 1);
-            for (int i = 0; i < count; i++) {
-                otherElements.add(buf.readVarInt());
-            }
-            count = buf.readVarInt();
-            List<ResourceLocation> otherTags = new ArrayList<>(count + 1);
-            for (int i = 0; i < count; i++) {
-                otherTags.add(buf.readResourceLocation());
-            }
-            return new TagData(otherElements, otherTags);
-        }
-        
-        private void toNetwork(FriendlyByteBuf buf) {
-            buf.writeVarInt(otherElements.size());
-            for (int integer : otherElements) {
-                buf.writeVarInt(integer);
-            }
-            buf.writeVarInt(otherTags.size());
-            for (ResourceLocation tag : otherTags) {
-                writeResourceLocation(buf, tag);
-            }
-        }
+
+
+        public static final StreamCodec<? super RegistryFriendlyByteBuf, TagData> CODEC = StreamCodec.composite(
+                ByteBufCodecs.INT.apply(ByteBufCodecs.list()).map(IntArrayList::new, ArrayList::new),
+                TagData::otherElements,
+                ResourceLocation.STREAM_CODEC.apply(ByteBufCodecs.collection(ArrayList::new)),
+                TagData::otherTags,
+                TagData::new
+        );
     }
-    
-    private static void writeResourceLocation(FriendlyByteBuf buf, ResourceLocation location) {
-        if (location.getNamespace().equals("minecraft")) {
-            buf.writeUtf(location.getPath());
-        } else {
-            buf.writeUtf(location.toString());
-        }
-    }
-    
+
     public static void init() {
         EnvExecutor.runInEnv(Env.CLIENT, () -> Client::init);
-        
+        if (Platform.getEnvironment() == Env.SERVER) {
+            NetworkManager.registerS2CPayloadType(RequestTagsResponsePacket.TYPE, RequestTagsResponsePacket.STREAM_CODEC, List.of(new SplitPacketTransformer()));
+        }
+
         NetworkManager.registerReceiver(NetworkManager.c2s(), REQUEST_TAGS_PACKET_C2S, Collections.singletonList(new SplitPacketTransformer()), (buf, context) -> {
             UUID uuid = buf.readUUID();
             ResourceKey<? extends Registry<?>> resourceKey = ResourceKey.createRegistryKey(buf.readResourceLocation());
             RegistryFriendlyByteBuf newBuf = new RegistryFriendlyByteBuf(Unpooled.buffer(), context.registryAccess());
             newBuf.writeUUID(uuid);
             Map<ResourceLocation, TagData> dataMap = TAG_DATA_MAP.getOrDefault(resourceKey, Collections.emptyMap());
-            newBuf.writeInt(dataMap.size());
-            for (Map.Entry<ResourceLocation, TagData> entry : dataMap.entrySet()) {
-                writeResourceLocation(newBuf, entry.getKey());
-                entry.getValue().toNetwork(newBuf);
-            }
-            NetworkManager.sendToPlayer((ServerPlayer) context.getPlayer(), REQUEST_TAGS_PACKET_S2C, newBuf);
+            var packet = new RequestTagsResponsePacket(uuid, dataMap);
+            NetworkManager.sendToPlayer((ServerPlayer) context.getPlayer(), packet);
         });
     }
     
@@ -176,17 +155,10 @@ public class TagNodes {
             ClientLifecycleEvent.CLIENT_LEVEL_LOAD.register(world -> {
                 requestedTags.clear();
             });
-            NetworkManager.registerReceiver(NetworkManager.s2c(), REQUEST_TAGS_PACKET_S2C, (buf, context) -> {
-                UUID uuid = buf.readUUID();
-                if (nextUUID.equals(uuid)) {
-                    Map<ResourceLocation, TagData> map = new HashMap<>();
-                    int count = buf.readInt();
-                    for (int i = 0; i < count; i++) {
-                        map.put(buf.readResourceLocation(), TagData.fromNetwork(buf));
-                    }
-                    
-                    TAG_DATA_MAP.put(nextResourceKey, map);
-                    nextCallback.accept(DataResult.success(map));
+            NetworkManager.registerReceiver(NetworkManager.s2c(), RequestTagsResponsePacket.TYPE, RequestTagsResponsePacket.STREAM_CODEC, (packet, context) -> {
+                if (nextUUID.equals(packet.uuid())) {
+                    TAG_DATA_MAP.put(nextResourceKey, packet.values());
+                    nextCallback.accept(DataResult.success(packet.values()));
                     
                     nextUUID = null;
                     nextResourceKey = null;
