@@ -34,6 +34,7 @@ import net.fabricmc.fabric.api.transfer.v1.context.ContainerItemContext;
 import net.fabricmc.fabric.api.transfer.v1.fluid.FluidStorage;
 import net.fabricmc.fabric.api.transfer.v1.fluid.FluidVariant;
 import net.fabricmc.fabric.api.transfer.v1.storage.Storage;
+import net.minecraft.core.component.DataComponents;
 import net.minecraft.world.item.ItemStack;
 
 import java.util.List;
@@ -45,7 +46,13 @@ public class FabricFluidAPISupportPlugin implements REICommonPlugin {
     public void registerFluidSupport(FluidSupportProvider support) {
         support.register(entry -> {
             ItemStack stack = entry.getValue().copy();
-            Storage<FluidVariant> storage = FluidStorage.ITEM.find(stack, ContainerItemContext.withConstant(stack));
+            var context = ContainerItemContext.withConstant(stack);
+
+            if (context.getItemVariant().getComponents().get(DataComponents.POTION_CONTENTS) == null) {
+                return CompoundEventResult.pass();
+            }
+
+            Storage<FluidVariant> storage = FluidStorage.ITEM.find(stack, context);
             if (storage != null) {
                 List<EntryStack<FluidStack>> result = StreamSupport.stream(storage.spliterator(), false)
                         .filter(view -> !view.isResourceBlank())
